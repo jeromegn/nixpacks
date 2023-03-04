@@ -21,7 +21,7 @@ mod topological_sort;
 mod utils;
 
 pub trait PlanGenerator {
-    fn generate_plan(&mut self, app: &App, environment: &Environment) -> Result<BuildPlan>;
+    fn generate_plan(&mut self, app: &App, environment: &Environment) -> Result<(BuildPlan, App)>;
     fn get_plan_providers(&self, app: &App, environment: &Environment) -> Result<Vec<String>>;
 }
 
@@ -282,7 +282,7 @@ impl BuildPlan {
         self.resolve_phase_names();
         let phases = self.phases.get_or_insert(Phases::default());
         for (_, phase) in phases.iter_mut() {
-            phase.pin();
+            phase.pin(use_debian);
         }
 
         if let Some(start) = &mut self.start_phase {

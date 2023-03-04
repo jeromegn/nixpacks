@@ -119,8 +119,7 @@ impl DockerfileGenerator for BuildPlan {
                 .context("Failed to convert nix file path to slash path.")?;
 
             nix_install_cmds.push(format!(
-                "COPY {nix_file_path} {nix_file_path}\nRUN nix-env -if {nix_file_path} && nix-collect-garbage -d",
-                nix_file_path = nix_file_path
+                "COPY {nix_file_path} {nix_file_path}\nRUN nix-env -if {nix_file_path} && nix-collect-garbage -d"
             ));
         }
         let nix_install_cmds = nix_install_cmds.join("\n");
@@ -311,6 +310,7 @@ impl DockerfileGenerator for StartPhase {
                 formatdoc! {"
                   # start
                   FROM {run_image}
+                  ENTRYPOINT [\"/bin/bash\", \"-l\", \"-c\"]
                   WORKDIR {APP_DIR}
                   COPY --from=0 /etc/ssl/certs /etc/ssl/certs
                   RUN true
@@ -361,10 +361,7 @@ impl DockerfileGenerator for Phase {
             let joined_paths = paths.join(":");
             (
                 format!("ENV PATH {joined_paths}:$PATH"),
-                format!(
-                    "RUN printf '\\nPATH={}:$PATH' >> /root/.profile",
-                    joined_paths
-                ),
+                format!("RUN printf '\\nPATH={joined_paths}:$PATH' >> /root/.profile"),
             )
         } else {
             (String::new(), String::new())

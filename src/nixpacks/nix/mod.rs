@@ -6,9 +6,12 @@ use crate::nixpacks::plan::phase::{Phase, Phases};
 pub mod pkg;
 
 // This line is automatically updated.
-// Last Modified: 2022-12-19 17:04:12 UTC+0000
-// https://github.com/NixOS/nixpkgs/commit/bb31220cca6d044baa6dc2715b07497a2a7c4bc7
-pub const NIXPKGS_ARCHIVE: &str = "bb31220cca6d044baa6dc2715b07497a2a7c4bc7";
+// Last Modified: 2023-01-02 17:04:24 UTC+0000
+// https://github.com/NixOS/nixpkgs/commit/293a28df6d7ff3dec1e61e37cc4ee6e6c0fb0847
+pub const NIXPKGS_ARCHIVE: &str = "293a28df6d7ff3dec1e61e37cc4ee6e6c0fb0847";
+
+// Version of the Nix archive that uses OpenSSL 1.1
+pub const NIXPACKS_ARCHIVE_LEGACY_OPENSSL: &str = "a0b7e70db7a55088d3de0cc370a59f9fbcc906c3";
 
 #[derive(Eq, PartialEq, Default, Debug, Clone)]
 struct NixGroup {
@@ -121,8 +124,7 @@ fn nix_expression_for_group(group: &NixGroup) -> String {
         .join("\n");
 
     let pkg_import = format!(
-        "import (fetchTarball \"https://github.com/NixOS/nixpkgs/archive/{}.tar.gz\")",
-        archive
+        "import (fetchTarball \"https://github.com/NixOS/nixpkgs/archive/{archive}.tar.gz\")"
     );
 
     // If the openssl library is added, set the OPENSSL_DIR and OPENSSL_LIB_DIR environment variables

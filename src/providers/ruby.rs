@@ -2,7 +2,6 @@ use super::{node::NodeProvider, Provider};
 use crate::nixpacks::{
     app::App,
     environment::{Environment, EnvironmentVariables},
-    images::DEBIAN_BASE_IMAGE,
     nix::pkg::Pkg,
     plan::{
         phase::{Phase, StartPhase},
@@ -11,7 +10,6 @@ use crate::nixpacks::{
 };
 use anyhow::{bail, Ok, Result};
 use regex::Regex;
-use semver::Version;
 
 pub struct RubyProvider {}
 
@@ -28,7 +26,7 @@ impl Provider for RubyProvider {
 
     fn get_build_plan(&self, app: &App, env: &Environment) -> Result<Option<BuildPlan>> {
         let setup = self.get_setup(app, env)?;
-        let install = self.get_install(app)?;
+        let install = self.get_install(app, env)?;
         let build = self.get_build(app)?;
         let start = self.get_start(app)?;
 
@@ -51,19 +49,14 @@ impl Provider for RubyProvider {
             }
         }
 
-        plan.add_variables(self.get_environment_variables(app)?);
-
-        // Temporary fix to allow using older versions of ruby
-        if self.requires_openssl_1(app)? {
-            plan.build_image = Some(DEBIAN_BASE_IMAGE.to_string());
-        }
+        plan.add_variables(self.get_environment_variables(app, env)?);
 
         Ok(Some(plan))
     }
 }
 
 impl RubyProvider {
-    fn get_setup(&self, app: &App, _env: &Environment) -> Result<Option<Phase>> {
+    fn get_setup(&self, app: &App, env: &Environment) -> Result<Option<Phase>> {
         let mut setup = Phase::setup(None);
         setup.add_apt_pkgs(vec!["procps".to_string()]);
 
@@ -87,25 +80,50 @@ impl RubyProvider {
             setup.add_apt_pkgs(vec![String::from("libicu-dev")]);
         }
 
-        let ruby_version = self.get_ruby_version(app)?;
+        let ruby_version = self.get_ruby_version(app, env)?;
+        let ruby_version = ruby_version.trim_start_matches("ruby-");
+
+        // Packages necessary for rbenv
+        // https://github.com/rbenv/ruby-build/wiki#ubuntudebianmint
+        setup.add_apt_pkgs(
+            vec![
+                "git",
+                "curl",
+                "autoconf",
+                "bison",
+                "build-essential",
+                "libssl-dev",
+                "libyaml-dev",
+                "libreadline6-dev",
+                "zlib1g-dev",
+                "libncurses5-dev",
+                "libffi-dev",
+                "libgdbm6",
+                "libgdbm-dev",
+                "libdb-dev",
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+        );
+
+        let bundler_version = self.get_bundler_version(app);
 
         setup.add_cmd(format!(
-            "curl -sSL https://get.rvm.io | bash -s stable \
-            && . /etc/profile.d/rvm.sh \
-            && rvm install {ruby_version} \
-            && rvm --default use {ruby_version} \
-            && gem install {bundler_version} \
-            && rm -rf /usr/local/rvm/src",
-            ruby_version = ruby_version,
-            bundler_version = self.get_bundler_version(app)
+            "curl -fsSL https://github.com/rbenv/rbenv-installer/raw/HEAD/bin/rbenv-installer | bash -s stable \
+            && printf '\\neval \"$(rbenv init -)\"' >> /root/.profile \
+            && . /root/.profile \
+            && rbenv install {ruby_version} \
+            && rbenv global {ruby_version} \
+            && gem install {bundler_version}"
         ));
 
-        setup.add_cmd("echo 'source /usr/local/rvm/scripts/rvm' >> /root/.profile".to_string());
+        setup.add_path("$HOME/.rbenv/bin".to_string());
 
         Ok(Some(setup))
     }
 
-    fn get_install(&self, app: &App) -> Result<Option<Phase>> {
+    fn get_install(&self, app: &App, env: &Environment) -> Result<Option<Phase>> {
         let mut install = Phase::install(None);
         install.add_cache_directory(BUNDLE_CACHE_DIR.to_string());
 
@@ -118,7 +136,7 @@ impl RubyProvider {
         install.add_cmd("bundle install".to_string());
 
         // Ensure that the ruby executable is in the PATH
-        let ruby_version = self.get_ruby_version(app)?;
+        let ruby_version = self.get_ruby_version(app, env)?;
         install.add_path(format!("/usr/local/rvm/rubies/{ruby_version}/bin"));
         install.add_path(format!("/usr/local/rvm/gems/{ruby_version}/bin"));
         install.add_path(format!("/usr/local/rvm/gems/{ruby_version}@global/bin"));
@@ -143,15 +161,18 @@ impl RubyProvider {
         }
     }
 
-    fn get_environment_variables(&self, app: &App) -> Result<EnvironmentVariables> {
-        let ruby_version = self.get_ruby_version(app)?;
+    fn get_environment_variables(
+        &self,
+        app: &App,
+        env: &Environment,
+    ) -> Result<EnvironmentVariables> {
+        let ruby_version = self.get_ruby_version(app, env)?;
         let mut env_vars = EnvironmentVariables::from([
             ("BUNDLE_GEMFILE".to_string(), "/app/Gemfile".to_string()),
             (
                 "GEM_PATH".to_string(),
                 format!(
-                    "/usr/local/rvm/gems/{ruby_version}:/usr/local/rvm/gems/{ruby_version}@global",
-                    ruby_version = ruby_version
+                    "/usr/local/rvm/gems/{ruby_version}:/usr/local/rvm/gems/{ruby_version}@global"
                 ),
             ),
             (
@@ -190,7 +211,10 @@ impl RubyProvider {
         }
     }
 
-    fn get_ruby_version(&self, app: &App) -> Result<String> {
+    fn get_ruby_version(&self, app: &App, env: &Environment) -> Result<String> {
+        if let Some(version) = env.get_config_variable("RUBY_VERSION") {
+            return Ok(version);
+        }
         if app.includes_file(".ruby-version") {
             return Ok(app.read_file(".ruby-version")?.trim().to_string());
         }
@@ -221,21 +245,6 @@ impl RubyProvider {
             "bundler".to_string()
         } else {
             "bundler".to_string()
-        }
-    }
-
-    fn requires_openssl_1(&self, app: &App) -> Result<bool> {
-        let ruby_version = self.get_ruby_version(app)?;
-        match Version::parse(ruby_version.trim_start_matches("ruby-")) {
-            std::result::Result::Ok(v) => {
-                // Version 3.1.0 and above work with openssl 3.0
-                if v.major >= 3 && v.minor >= 1 {
-                    Ok(false)
-                } else {
-                    Ok(true)
-                }
-            }
-            std::result::Result::Err(_) => Ok(false),
         }
     }
 
@@ -271,12 +280,18 @@ impl RubyProvider {
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
     fn test_gemfile_lock_version() -> Result<()> {
         assert_eq!(
-            RubyProvider::get_ruby_version(&RubyProvider {}, &App::new("./examples/ruby")?)?,
+            RubyProvider::get_ruby_version(
+                &RubyProvider {},
+                &App::new("./examples/ruby")?,
+                &Environment::default()
+            )?,
             "ruby-3.1.2"
         );
 
@@ -288,6 +303,7 @@ mod test {
         assert!(RubyProvider::get_ruby_version(
             &RubyProvider {},
             &App::new("./examples/ruby-no-version")?,
+            &Environment::default(),
         )
         .is_err());
         Ok(())
@@ -298,9 +314,27 @@ mod test {
         assert_eq!(
             RubyProvider::get_ruby_version(
                 &RubyProvider {},
-                &App::new("./examples/ruby-rails-postgres")?
+                &App::new("./examples/ruby-rails-postgres")?,
+                &Environment::default(),
             )?,
             "3.1.2"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_version_arg() -> Result<()> {
+        assert_eq!(
+            RubyProvider::get_ruby_version(
+                &RubyProvider {},
+                &App::new("./examples/ruby")?,
+                &Environment::new(BTreeMap::from([(
+                    "NIXPACKS_RUBY_VERSION".to_string(),
+                    "3.1.1".to_string()
+                )]))
+            )?,
+            "3.1.1"
         );
 
         Ok(())

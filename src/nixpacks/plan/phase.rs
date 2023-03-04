@@ -1,9 +1,10 @@
 use crate::nixpacks::{
     images::{DEFAULT_BASE_IMAGE, STANDALONE_IMAGE},
-    nix::{pkg::Pkg, NIXPKGS_ARCHIVE},
+    nix::{pkg::Pkg, NIXPACKS_ARCHIVE_LEGACY_OPENSSL, NIXPKGS_ARCHIVE},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::Hash;
 
 use super::utils::remove_autos_from_vec;
 
@@ -171,10 +172,12 @@ impl Phase {
     }
 
     pub fn add_cache_directory<S: Into<String>>(&mut self, dir: S) {
-        self.cache_directories = Some(add_to_option_vec(
+        let mut new_directories = prevent_duplicates_vec(add_to_option_vec(
             self.cache_directories.clone(),
             dir.into(),
         ));
+        new_directories.sort();
+        self.cache_directories = Some(new_directories);
     }
 
     pub fn add_path(&mut self, path: String) {
@@ -185,9 +188,13 @@ impl Phase {
         self.nixpkgs_archive = Some(archive);
     }
 
-    pub fn pin(&mut self) {
+    pub fn pin(&mut self, use_legacy_openssl: bool) {
         if self.uses_nix() && self.nixpkgs_archive.is_none() {
-            self.nixpkgs_archive = Some(NIXPKGS_ARCHIVE.to_string());
+            self.nixpkgs_archive = if use_legacy_openssl {
+                Some(NIXPACKS_ARCHIVE_LEGACY_OPENSSL.to_string())
+            } else {
+                Some(NIXPKGS_ARCHIVE.to_string())
+            }
         }
 
         self.cmds = pin_option_vec(&self.cmds);
@@ -257,4 +264,10 @@ fn add_multiple_to_option_vec<T: Clone>(values: Option<Vec<T>>, new_values: Vec<
     } else {
         new_values
     }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn prevent_duplicates_vec<T: Clone + Eq + Hash>(values: Vec<T>) -> Vec<T> {
+    let set: HashSet<T> = values.iter().cloned().collect::<HashSet<_>>();
+    set.into_iter().collect()
 }
